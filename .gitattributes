@@ -1,0 +1,78 @@
+# Git attributes for PlatformIO project
+
+# Text files
+*.txt text
+*.md text
+*.ini text
+*.json text
+*.yml text
+*.yaml text
+
+# Source code files
+*.c text diff=cpp
+*.cpp text diff=cpp
+*.h text diff=cpp
+*.hpp text diff=cpp
+*.ino text diff=cpp
+
+# Configuration files
+*.conf text
+*.cfg text
+*.config text
+platformio.ini text
+
+# Documentation
+*.md text
+README* text
+
+# Scripts
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files
+*.bin binary
+*.hex binary
+*.elf binary
+*.o binary
+*.obj binary
+*.lib binary
+*.a binary
+*.so binary
+*.dll binary
+*.exe binary
+
+# Images
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.bmp binary
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+*.rar binary
+
+# Fonts
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.eot binary
+
+# Eagle files (if using)
+*.sch binary
+*.brd binary
+*.lbr binary
+
+# KiCad files (if using)
+*.kicad_pcb binary
+*.kicad_sch text
+*.kicad_pro text
+*.kicad_prl text
+*.kicad_wks text

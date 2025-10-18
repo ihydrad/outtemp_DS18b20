@@ -1,0 +1,210 @@
+# PlatformIO
+.pio/
+.vscode/
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# Build directories
+build/
+.build/
+.pioenvs/
+.piolibdeps/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.pid
+*.seed
+*.pid.lock
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Windows
+*.stackdump
+
+# IDE files
+*.sublime-project
+*.sublime-workspace
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.bin
+*.elf
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+# Arduino IDE
+*.ino.cpp
+*.ino.hex
+*.ino.elf
+*.ino.eep
+*.ino.map
+
+# CLion
+cmake-build-*/
+
+# NetBeans
+nbproject/
+.nb-gradle/
+
+# IntelliJ IDEA
+*.iml
+.idea/
+
+# Eclipse
+.metadata
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+.recommenders
+.project
+.classpath
+.c9/
+
+# GCC
+*.gch
+
+# Clang
+*.pch
+
+# Archives
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test coverage
+*.gcda
+*.gcno
+*.gcov
+
+# Code analysis
+cppcheck_report.xml
+.cppcheck/
+
+# Documentation build
+docs/_build/
+doc/_build/
+
+# Local configuration files (should not be shared)
+config.h
+secrets.h
+private.h
+
+# Hardware specific files (uncomment if you want to ignore)
+# *.sch
+# *.brd
+# *.pcb
+# *.pro
+# *.kicad_pcb
+# *.kicad_sch
+
+# Custom firmware files to ignore (uncomment as needed)
+# *.bin
+# *.hex
+# *.elf
+
+# PlatformIO specific
+.clang_complete
+.gcc-flags.json
+
+# Travis CI (if not using)
+# .travis.yml
+
+# GitHub Actions (if not using)
+# .github/
+
+# Personal notes and documentation drafts
+NOTES.md
+TODO.md
+DRAFT_*.md
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Package manager files
+package-lock.json
+yarn.lock
+
+# Custom project files to ignore
+# Add your custom files here
