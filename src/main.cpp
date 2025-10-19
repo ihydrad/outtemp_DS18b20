@@ -1,3 +1,19 @@
+/**
+ * @file main.cpp
+ * @brief Wireless Temperature Sensor with nRF24L01+ and DS18B20
+ * @author Your Name
+ * @date 2025
+ * 
+ * Battery-powered temperature sensor using:
+ * - ATmega328P @ 1MHz for low power consumption
+ * - DS18B20 temperature sensor
+ * - nRF24L01+ wireless module
+ * - Deep sleep mode with WDT wake-up
+ */
+
+// ================================================================================================
+// INCLUDES
+// ================================================================================================
 #include <Arduino.h>
 #include <avr/sleep.h>
 #include <avr/wdt.h>
@@ -5,347 +21,459 @@
 #include <RF24.h>
 #include <OneWire.h>
 
+// ================================================================================================
+// DEBUG CONFIGURATION
+// ================================================================================================
 //#define DEBUG
 
 #ifdef DEBUG
-  #include <printf.h>
+    #include <printf.h>
 #endif
 
-#define SBR(port, bit)        port |= (1<<bit)
-#define CBR(port, bit)        port &= (~(1<<bit))
-#define INV(port, bit)        port ^= (1<<bit)
-#define SBRC(port, bit)      ((port & (1<<bit)) == 0)
-#define SBRS(port, bit)      ((port & (1<<bit)) != 0)
+// ================================================================================================
+// BIT MANIPULATION MACROS
+// ================================================================================================
+#define SET_BIT(port, bit)      ((port) |= (1 << (bit)))
+#define CLEAR_BIT(port, bit)    ((port) &= ~(1 << (bit)))
+#define TOGGLE_BIT(port, bit)   ((port) ^= (1 << (bit)))
+#define BIT_IS_CLEAR(port, bit) (((port) & (1 << (bit))) == 0)
+#define BIT_IS_SET(port, bit)   (((port) & (1 << (bit))) != 0)
 
-#define TR_NUM               1
-#define TR_DELMIN            30
-#define DS_VCC               3
-#define DS_DTA               4
-#define ADCGND               A3
-#define ADCBATPIN            A2
-#define ADCVCC               A1
-#define LED_DEBUG            7
-#define DIV_ADC              2.15f  // Использование float константы
-#define PayloadSize          5
-#define Channel              121
-// Более быстрые прямые манипуляции с портами вместо digitalWrite
-#define DS_POW_EN            PORTD |= (1<<PD3)
-#define DS_POW_DIS           PORTD &= ~(1<<PD3) 
+// ================================================================================================
+// HARDWARE CONFIGURATION
+// ================================================================================================
+// Sensor and communication settings
+constexpr uint8_t  TRANSMITTER_ID      = 1;
+constexpr uint8_t  TRANSMISSION_DELAY  = 30;      // Minutes between transmissions
+constexpr uint8_t  PAYLOAD_SIZE         = 5;      // Data packet size in bytes
+constexpr uint8_t  RF_CHANNEL          = 121;     // nRF24L01+ channel (0-127)
 
+// Pin definitions
+constexpr uint8_t  PIN_DS18B20_VCC     = 3;       // DS18B20 power control
+constexpr uint8_t  PIN_DS18B20_DATA    = 4;       // DS18B20 data line
+constexpr uint8_t  PIN_ADC_GROUND      = A3;      // ADC reference ground
+constexpr uint8_t  PIN_BATTERY_ADC     = A2;      // Battery voltage measurement
+constexpr uint8_t  PIN_ADC_VCC         = A1;      // ADC reference voltage
+constexpr uint8_t  PIN_LED_DEBUG       = 7;       // Debug LED
 
-RF24            radio(9, 10); //4 for CE and 15 for CSN
-OneWire         ds(DS_DTA);
+// Measurement constants
+constexpr float    ADC_VOLTAGE_DIVIDER = 2.15f;   // Voltage divider ratio
+constexpr float    DS18B20_ERROR_TEMP  = -127.0f; // Error temperature value
 
-uint8_t data[PayloadSize],
-        tx_adrr[]="1Node",
-        wdt_cnt = 7*TR_DELMIN,
-        mcur;
+// Power control macros for DS18B20
+#define DS18B20_POWER_ON()    SET_BIT(PORTD, PD3)
+#define DS18B20_POWER_OFF()   CLEAR_BIT(PORTD, PD3)
 
-void enWDT(void);
-void disWDT();
-void initNRF(void);
-void sleep(void);
-void wakeup(void);
-void prepData(void);
-void conf_ds18b20(void);
+// ================================================================================================
+// GLOBAL OBJECTS AND VARIABLES
+// ================================================================================================
+RF24    g_radio(9, 10);                           // nRF24L01+ (CE=9, CSN=10)
+OneWire g_ds18b20(PIN_DS18B20_DATA);              // DS18B20 sensor
 
-ISR(WDT_vect){
-  wdt_cnt++;
+// Communication data
+uint8_t g_data_packet[PAYLOAD_SIZE];              // Data to transmit
+uint8_t g_tx_address[] = "1Node";                 // Transmission address
+
+// System state
+volatile uint8_t g_watchdog_counter = 7 * TRANSMISSION_DELAY;  // WDT counter
+uint8_t          g_mcu_reset_source = 0;          // Last reset cause
+
+// ================================================================================================
+// FUNCTION DECLARATIONS
+// ================================================================================================
+void enableWatchdog(void);
+void disableWatchdog(void);
+void initializeRadio(void);
+void enterSleepMode(void);
+void wakeupFromSleep(void);
+void prepareDataPacket(void);
+void configureDS18B20(void);
+float readDS18B20Temperature(void);
+
+// ================================================================================================
+// INTERRUPT SERVICE ROUTINES
+// ================================================================================================
+/**
+ * @brief Watchdog Timer interrupt handler
+ * Increments counter for transmission timing
+ */
+ISR(WDT_vect) {
+    g_watchdog_counter++;
 }
 
-void setup() {  
-  mcur = MCUSR;
-  MCUSR = 0;
-  // Установка частоты CPU на 1МГц для экономии энергии
-  CLKPR = (1<<CLKPCE);
-  CLKPR = (0<<CLKPCE)|(0<<CLKPS3)|(0<<CLKPS2)|(1<<CLKPS1)|(1<<CLKPS0);  
-  
-  // Настройка пинов для DS18B20
-  DDRD |= (1<<PD3);  // DS_VCC как выход
-  PORTD &= ~(1<<PD3); // Изначально выключен
-  
-  initNRF();
-  conf_ds18b20(); // Включаем конфигурацию DS18B20
-  
-  // Настройка ADC
-  analogReference(INTERNAL);
-  ADCSRA = 0; // Отключаем ADC для экономии
-  
-  // Отключаем аналоговый компаратор
-  ACSR = (1<<ACD);  
-  
-  #ifdef DEBUG
-    Serial.begin(9600);
-    delay(1000);
-    printf_begin();
-    radio.printDetails();
-    Serial.print("Last reset source: ");    
-    Serial.println(mcur, HEX);
-    delay(1000);
-  #endif  
-  
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep();
-}
-
-float read_ds18b20(){
-  #ifdef DEBUG
-    byte data[9];
-  #else
-    byte data[2];
-  #endif
-  
-  DS_POW_EN; 
-  delay(5); // Небольшая пауза для стабилизации питания
-  
-  if(!ds.reset()){ // Проверяем наличие датчика
-    DS_POW_DIS;
-    return -127.0f;
-  }
-  
-  // Запуск преобразования
-  ds.write(0xCC); // Skip ROM
-  ds.write(0x44); // Start conversion
-  
-  // Ожидание завершения (для 10-bit достаточно 200мс)
-  delay(200);
-  
-  // Чтение результата
-  if(!ds.reset()){
-    DS_POW_DIS;
-    return -127.0f;
-  }
-  
-  ds.write(0xCC); // Skip ROM
-  ds.write(0xBE); // Read scratchpad
-  
-  #ifdef DEBUG
-    for(uint8_t i = 0; i < 9; i++)
-      data[i] = ds.read();
-    Serial.print("CFG DS = 0x");
-    Serial.println(data[4], HEX);
-  #else
-    data[0] = ds.read();
-    data[1] = ds.read();
-  #endif
-  
-  DS_POW_DIS;
-  
-  // Обработка температуры (оптимизированный расчет)
-  int16_t raw = (data[1] << 8) | data[0];
-  
-  // Для 10-bit разрешения используем деление на 16
-  float temp = (float)raw / 16.0f;
-  
-  return temp;
-}
-
-void conf_ds18b20(){
-  DS_POW_EN;
-  delay(10); // Ждем стабилизации питания
-  
-  if(!ds.reset()){
-    DS_POW_DIS;
-    return;
-  }
-  
-  // Конфигурируем датчик на 10-bit разрешение для быстрого чтения
-  ds.write(0xCC);  // Skip ROM
-  ds.write(0x4E);  // Write Scratchpad
-  ds.write(0x7F);  // TH register (+127°C)
-  ds.write(0x80);  // TL register (-128°C) 
-  ds.write(0x3F);  // Config register: 10-bit resolution (375ms conversion)
-  
-  delay(10);
-  
-  // Сохраняем конфигурацию в EEPROM
-  ds.reset();
-  ds.write(0xCC);  // Skip ROM
-  ds.write(0x48);  // Copy scratchpad to EEPROM
-  
-  delay(15); // Ждем записи в EEPROM
-  ds.reset();
-  DS_POW_DIS;
-}
-
-void initNRF(){
-  // Настройка SPI пинов как выходы
-  DDRB |= (1<<PB2) | (1<<PB3) | (1<<PB5); // MOSI, SCK, SS
-  DDRB &= ~(1<<PB4); // MISO как вход
-  
-  SPI.begin();
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setBitOrder(MSBFIRST);
-  SPI.setClockDivider(SPI_CLOCK_DIV2); // Ускоряем SPI
-  
-  radio.begin();
-  radio.setChannel(125);
-  radio.setDataRate(RF24_1MBPS); // Более надежная скорость для батарейного питания
-  radio.setPALevel(RF24_PA_HIGH); // Достаточная мощность, экономия энергии
-  radio.disableDynamicPayloads();
-  radio.setPayloadSize(PayloadSize);
-  radio.setAutoAck(false);
-  radio.setRetries(0, 0);
-  radio.setAddressWidth(5);
-  radio.openWritingPipe(tx_adrr);
-  radio.setCRCLength(RF24_CRC_8);
-  radio.stopListening();
-  radio.powerDown(); // Сразу выключаем для экономии
-}
-
-void enWDT(){
-  cli();
-  wdt_reset();
-  MCUSR &= ~(1<<WDRF);
-  WDTCSR |= (1<<WDCE) | (1<<WDE); //WDT ISR 8sec
-  WDTCSR = (1<<WDP3)| (1<<WDP0);
-  WDTCSR |= bit (WDIE);
-  sei();
-  #ifdef DEBUG
-    Serial.print(". ");
-    delay(1000);
-  #endif
-}
-
-void disWDT(){
-  cli();
-  wdt_reset();
-  MCUSR &= ~(1<<WDRF);
-  WDTCSR |= (1<<WDCE) | (1<<WDE); //WDT ISR 8sec
-  WDTCSR = (1<<WDP3)| (1<<WDP0);
-  WDTCSR  = 0;
-  sei();
-  #ifdef DEBUG
-    Serial.print("WDT_DIS->");
-    delay(1000);
-  #endif
-}
-
-void sleep(){
-  radio.powerDown();
-  
-  // Отключаем ADC для экономии энергии
-  ADCSRA = 0;
-  
-  // Настраиваем все пины на выход и низкий уровень для минимального потребления
-  // Сохраняем состояние важных пинов
-  uint8_t oldDDRB = DDRB;
-  uint8_t oldDDRD = DDRD; 
-  uint8_t oldDDRC = DDRC;
-  uint8_t oldPORTB = PORTB;
-  uint8_t oldPORTD = PORTD;
-  uint8_t oldPORTC = PORTC;
-  
-  // Устанавливаем все неиспользуемые пины в состояние INPUT_PULLUP для экономии
-  DDRB = 0x00;  // Все как входы
-  DDRD = 0x00;
-  DDRC = 0x00;
-  
-  PORTB = 0xFF; // Подтяжки включены
-  PORTD = 0xFF;
-  PORTC = 0xFF;
-  
-  // Но исключаем рабочие пины
-  DDRD |= (1<<PD3);  // DS_VCC остается выходом
-  PORTD &= ~(1<<PD3); // И в низком состоянии
-  
-  // Отключаем Brown-out detector в программном режиме
-  sleep_enable();
-  enWDT();
-  
-  MCUCR = (1<<BODS) | (1<<BODSE);
-  MCUCR = (1<<BODS);
-  sleep_cpu();
-  
-  // Восстанавливаем состояние после пробуждения
-  sleep_disable();
-  
-  DDRB = oldDDRB;
-  DDRD = oldDDRD;
-  DDRC = oldDDRC;
-  PORTB = oldPORTB;
-  PORTD = oldPORTD;
-  PORTC = oldPORTC;
-}
-
-void wakeup(){
-  disWDT();
-  radio.powerUp();
-  delay(2); // Небольшая пауза для стабилизации nRF24
-  
-  // Настройка пинов для измерения батареи
-  pinMode(ADCBATPIN, INPUT);
-  pinMode(ADCVCC, OUTPUT);
-  digitalWrite(ADCVCC, HIGH);
-  pinMode(ADCGND, OUTPUT);
-  digitalWrite(ADCGND, LOW);
-  
-  // Включаем ADC с предделителем для экономии энергии
-  ADCSRA = (1<<ADEN) | (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0); // Предделитель 128
-}
-
-void prepData(){
-  data[0] = TR_NUM;
-  if(mcur) {
-    data[0] |= (mcur << 4);
-    mcur = 0;   
-  }
-  
-  float temperature = read_ds18b20();
-  int16_t temp = (int16_t)(temperature * 100.0f);
-  
-  // Стабилизация перед измерением ADC
-  delay(2);
-  uint16_t adc_raw = analogRead(ADCBATPIN);
-  int16_t bat = (int16_t)(adc_raw / DIV_ADC);
-  
-  data[1] = (uint8_t)(temp >> 8);
-  data[2] = (uint8_t)(temp & 0xFF);  
-  data[3] = (uint8_t)(bat >> 8);  
-  data[4] = (uint8_t)(bat & 0xFF);
-
-  #ifdef DEBUG    
-    Serial.print("STATE: 0x");
-    Serial.println(data[0], HEX);
-    Serial.print("BAT ADC: ");
-    Serial.print(adc_raw);
-    Serial.print(", V: ");
-    Serial.println(bat / 100.0f, 2);
-    Serial.print("Temp: ");
-    Serial.println(temperature, 2);  
-    Serial.print("Data: ");
-    for(uint8_t i = 0; i < PayloadSize; i++){
-      Serial.print("0x");
-      if(data[i] < 0x10) Serial.print("0");
-      Serial.print(data[i], HEX);
-      if(i < PayloadSize-1) Serial.print(" ");
-    }
-    Serial.println();    
-  #endif 
-}
-
-void loop() {
-  if(wdt_cnt >= (7 * TR_DELMIN)){    // 7.4*8sec ≈ 1min            
-    wdt_cnt = 0;    
-    wakeup();    
+// ================================================================================================
+// MAIN SETUP FUNCTION
+// ================================================================================================
+/**
+ * @brief System initialization and configuration
+ * Sets up CPU frequency, pins, peripherals and enters sleep mode
+ */
+void setup() {
+    // Store and clear MCU status register
+    g_mcu_reset_source = MCUSR;
+    MCUSR = 0;
     
-    // Быстрое включение/выключение LED для индикации
-    DDRD |= (1<<PD7);   // LED_DEBUG как выход
-    PORTD |= (1<<PD7);  // Включаем LED
+    // Set CPU frequency to 1MHz for power saving
+    CLKPR = (1 << CLKPCE);                                    // Enable clock prescaler change
+    CLKPR = (0 << CLKPCE) | (0 << CLKPS3) | (0 << CLKPS2) |  // Set prescaler to 8
+            (1 << CLKPS1) | (1 << CLKPS0);                    // (8MHz / 8 = 1MHz)
     
-    prepData();
+    // Configure DS18B20 power pin
+    SET_BIT(DDRD, PD3);                                       // Set as output
+    CLEAR_BIT(PORTD, PD3);                                    // Initially off
     
-    // Попытка отправки с простой проверкой
-    bool result = radio.write(&data, PayloadSize);
+    // Initialize peripherals
+    initializeRadio();
+    configureDS18B20();
+    
+    // Configure ADC
+    analogReference(INTERNAL);                                // Use 1.1V internal reference
+    ADCSRA = 0;                                              // Disable ADC for power saving
+    
+    // Disable analog comparator
+    SET_BIT(ACSR, ACD);
     
     #ifdef DEBUG
-      Serial.print("TX result: ");
-      Serial.println(result ? "OK" : "FAIL");
-      delay(100);
+        Serial.begin(9600);
+        delay(1000);
+        printf_begin();
+        g_radio.printDetails();
+        Serial.print(F("Last reset source: 0x"));
+        Serial.println(g_mcu_reset_source, HEX);
+        delay(1000);
     #endif
     
-    PORTD &= ~(1<<PD7); // Выключаем LED
-    DDRD &= ~(1<<PD7);  // LED_DEBUG как вход
-  }                                             
-  sleep();                                                        
+    // Configure sleep mode and enter deep sleep
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    enterSleepMode();
+}
+
+// ================================================================================================
+// TEMPERATURE SENSOR FUNCTIONS
+// ================================================================================================
+/**
+ * @brief Read temperature from DS18B20 sensor
+ * @return Temperature in Celsius, or DS18B20_ERROR_TEMP on error
+ */
+float readDS18B20Temperature() {
+    #ifdef DEBUG
+        byte sensor_data[9];
+    #else
+        byte sensor_data[2];
+    #endif
+    
+    // Power on sensor and wait for stabilization
+    DS18B20_POWER_ON();
+    delay(5);
+    
+    // Check if sensor is present
+    if (!g_ds18b20.reset()) {
+        DS18B20_POWER_OFF();
+        return DS18B20_ERROR_TEMP;
+    }
+    
+    // Start temperature conversion
+    g_ds18b20.write(0xCC);  // Skip ROM command
+    g_ds18b20.write(0x44);  // Start conversion
+    
+    // Wait for conversion to complete (10-bit resolution: ~200ms)
+    delay(200);
+    
+    // Read conversion result
+    if (!g_ds18b20.reset()) {
+        DS18B20_POWER_OFF();
+        return DS18B20_ERROR_TEMP;
+    }
+    
+    g_ds18b20.write(0xCC);  // Skip ROM command
+    g_ds18b20.write(0xBE);  // Read scratchpad
+    
+    #ifdef DEBUG
+        for (uint8_t i = 0; i < 9; i++) {
+            sensor_data[i] = g_ds18b20.read();
+        }
+        Serial.print(F("DS18B20 Config: 0x"));
+        Serial.println(sensor_data[4], HEX);
+    #else
+        sensor_data[0] = g_ds18b20.read();
+        sensor_data[1] = g_ds18b20.read();
+    #endif
+    
+    DS18B20_POWER_OFF();
+    
+    // Process temperature data (optimized calculation for 10-bit resolution)
+    int16_t raw_temperature = (sensor_data[1] << 8) | sensor_data[0];
+    float temperature = static_cast<float>(raw_temperature) / 16.0f;
+    
+    return temperature;
+}
+
+/**
+ * @brief Configure DS18B20 sensor for optimal operation
+ * Sets 10-bit resolution for fast conversion and saves to EEPROM
+ */
+void configureDS18B20() {
+    DS18B20_POWER_ON();
+    delay(10);  // Wait for power stabilization
+    
+    if (!g_ds18b20.reset()) {
+        DS18B20_POWER_OFF();
+        return;
+    }
+    
+    // Configure sensor for 10-bit resolution (fast conversion)
+    g_ds18b20.write(0xCC);  // Skip ROM command
+    g_ds18b20.write(0x4E);  // Write scratchpad command
+    g_ds18b20.write(0x7F);  // TH register (+127°C)
+    g_ds18b20.write(0x80);  // TL register (-128°C)
+    g_ds18b20.write(0x3F);  // Config: 10-bit resolution (375ms conversion)
+    
+    delay(10);
+    
+    // Save configuration to EEPROM
+    g_ds18b20.reset();
+    g_ds18b20.write(0xCC);  // Skip ROM command
+    g_ds18b20.write(0x48);  // Copy scratchpad to EEPROM
+    
+    delay(15);  // Wait for EEPROM write
+    g_ds18b20.reset();
+    DS18B20_POWER_OFF();
+}
+
+// ================================================================================================
+// RADIO COMMUNICATION FUNCTIONS
+// ================================================================================================
+/**
+ * @brief Initialize nRF24L01+ radio module
+ * Configures SPI interface and radio parameters for low power operation
+ */
+void initializeRadio() {
+    // Configure SPI pins manually for optimal performance
+    SET_BIT(DDRB, PB2);     // MOSI as output
+    SET_BIT(DDRB, PB3);     // SCK as output  
+    SET_BIT(DDRB, PB5);     // SS as output
+    CLEAR_BIT(DDRB, PB4);   // MISO as input
+    
+    // Initialize SPI with optimized settings
+    SPI.begin();
+    SPI.setDataMode(SPI_MODE0);
+    SPI.setBitOrder(MSBFIRST);
+    SPI.setClockDivider(SPI_CLOCK_DIV2);  // Fast SPI for efficiency
+    
+    // Configure radio module
+    g_radio.begin();
+    g_radio.setChannel(RF_CHANNEL);
+    g_radio.setDataRate(RF24_1MBPS);                    // Reliable speed for battery operation
+    g_radio.setPALevel(RF24_PA_HIGH);                   // Good range with power efficiency
+    g_radio.disableDynamicPayloads();
+    g_radio.setPayloadSize(PAYLOAD_SIZE);
+    g_radio.setAutoAck(false);                          // Disable auto-acknowledgment
+    g_radio.setRetries(0, 0);                          // No retries for power saving
+    g_radio.setAddressWidth(5);
+    g_radio.openWritingPipe(g_tx_address);
+    g_radio.setCRCLength(RF24_CRC_8);
+    g_radio.stopListening();
+    g_radio.powerDown();                                // Power down immediately
+}
+
+// ================================================================================================
+// POWER MANAGEMENT FUNCTIONS  
+// ================================================================================================
+/**
+ * @brief Enable Watchdog Timer for 8-second intervals
+ * Configures WDT to generate interrupts every 8 seconds for wake-up timing
+ */
+void enableWatchdog() {
+    cli();                                              // Disable interrupts
+    wdt_reset();                                        // Reset watchdog
+    CLEAR_BIT(MCUSR, WDRF);                            // Clear watchdog reset flag
+    SET_BIT(WDTCSR, WDCE);                             // Enable watchdog change
+    SET_BIT(WDTCSR, WDE);
+    WDTCSR = (1 << WDP3) | (1 << WDP0);                // Set 8-second timeout
+    SET_BIT(WDTCSR, WDIE);                             // Enable watchdog interrupt
+    sei();                                              // Enable interrupts
+    
+    #ifdef DEBUG
+        Serial.print(F(". "));
+        delay(100);
+    #endif
+}
+
+/**
+ * @brief Disable Watchdog Timer
+ * Safely disables watchdog timer operation
+ */
+void disableWatchdog() {
+    cli();                                              // Disable interrupts
+    wdt_reset();                                        // Reset watchdog
+    CLEAR_BIT(MCUSR, WDRF);                            // Clear watchdog reset flag
+    SET_BIT(WDTCSR, WDCE);                             // Enable watchdog change
+    SET_BIT(WDTCSR, WDE);
+    WDTCSR = (1 << WDP3) | (1 << WDP0);                // Set timeout
+    WDTCSR = 0;                                         // Disable watchdog
+    sei();                                              // Enable interrupts
+    
+    #ifdef DEBUG
+        Serial.print(F("WDT_DIS->"));
+        delay(100);
+    #endif
+}
+
+/**
+ * @brief Enter deep sleep mode with maximum power saving
+ * Configures all pins for minimum power consumption and enters sleep
+ */
+void enterSleepMode() {
+    g_radio.powerDown();
+    
+    // Disable ADC for power saving
+    ADCSRA = 0;
+    
+    // Save current pin states for restoration after wake-up
+    const uint8_t saved_ddrb  = DDRB;
+    const uint8_t saved_ddrd  = DDRD;
+    const uint8_t saved_ddrc  = DDRC;
+    const uint8_t saved_portb = PORTB;
+    const uint8_t saved_portd = PORTD;
+    const uint8_t saved_portc = PORTC;
+    
+    // Set all unused pins as inputs with pull-ups for minimum power consumption
+    DDRB = 0x00;    // All pins as inputs
+    DDRD = 0x00;
+    DDRC = 0x00;
+    
+    PORTB = 0xFF;   // Enable pull-ups
+    PORTD = 0xFF;
+    PORTC = 0xFF;
+    
+    // Keep working pins in correct state
+    SET_BIT(DDRD, PD3);                                // DS18B20 power pin as output
+    CLEAR_BIT(PORTD, PD3);                             // Keep DS18B20 power off
+    
+    // Enable sleep and watchdog timer
+    sleep_enable();
+    enableWatchdog();
+    
+    // Disable Brown-out Detector during sleep
+    MCUCR = (1 << BODS) | (1 << BODSE);
+    MCUCR = (1 << BODS);
+    sleep_cpu();
+    
+    // Restore pin states after wake-up
+    sleep_disable();
+    DDRB  = saved_ddrb;
+    DDRD  = saved_ddrd;
+    DDRC  = saved_ddrc;
+    PORTB = saved_portb;
+    PORTD = saved_portd;
+    PORTC = saved_portc;
+}
+
+/**
+ * @brief Wake up from sleep mode and initialize peripherals
+ * Restores system state after wake-up from deep sleep
+ */
+void wakeupFromSleep() {
+    disableWatchdog();
+    g_radio.powerUp();
+    delay(2);  // Wait for nRF24 stabilization
+    
+    // Configure pins for battery voltage measurement
+    pinMode(PIN_BATTERY_ADC, INPUT);
+    pinMode(PIN_ADC_VCC, OUTPUT);
+    digitalWrite(PIN_ADC_VCC, HIGH);
+    pinMode(PIN_ADC_GROUND, OUTPUT);
+    digitalWrite(PIN_ADC_GROUND, LOW);
+    
+    // Enable ADC with power-efficient prescaler
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);  // Prescaler 128
+}
+
+// ================================================================================================
+// DATA PREPARATION AND TRANSMISSION
+// ================================================================================================
+/**
+ * @brief Prepare data packet for transmission
+ * Reads sensors and formats data into transmission packet
+ */
+void prepareDataPacket() {
+    g_data_packet[0] = TRANSMITTER_ID;
+    
+    // Include reset source information if available
+    if (g_mcu_reset_source) {
+        g_data_packet[0] |= (g_mcu_reset_source << 4);
+        g_mcu_reset_source = 0;
+    }
+    
+    // Read temperature sensor
+    float temperature = readDS18B20Temperature();
+    int16_t temp_encoded = static_cast<int16_t>(temperature * 100.0f);
+    
+    // Stabilize before ADC reading
+    delay(2);
+    uint16_t adc_raw = analogRead(PIN_BATTERY_ADC);
+    int16_t battery_voltage = static_cast<int16_t>(adc_raw / ADC_VOLTAGE_DIVIDER);
+    
+    // Pack data into transmission format
+    g_data_packet[1] = static_cast<uint8_t>(temp_encoded >> 8);
+    g_data_packet[2] = static_cast<uint8_t>(temp_encoded & 0xFF);
+    g_data_packet[3] = static_cast<uint8_t>(battery_voltage >> 8);
+    g_data_packet[4] = static_cast<uint8_t>(battery_voltage & 0xFF);
+
+    #ifdef DEBUG
+        Serial.print(F("STATE: 0x"));
+        Serial.println(g_data_packet[0], HEX);
+        Serial.print(F("BAT ADC: "));
+        Serial.print(adc_raw);
+        Serial.print(F(", V: "));
+        Serial.println(battery_voltage / 100.0f, 2);
+        Serial.print(F("Temp: "));
+        Serial.println(temperature, 2);
+        Serial.print(F("Data: "));
+        for (uint8_t i = 0; i < PAYLOAD_SIZE; i++) {
+            Serial.print(F("0x"));
+            if (g_data_packet[i] < 0x10) Serial.print(F("0"));
+            Serial.print(g_data_packet[i], HEX);
+            if (i < PAYLOAD_SIZE - 1) Serial.print(F(" "));
+        }
+        Serial.println();
+    #endif
+}
+
+// ================================================================================================
+// MAIN PROGRAM LOOP
+// ================================================================================================
+/**
+ * @brief Main program loop
+ * Checks transmission timing and handles sensor reading/data transmission cycles
+ */
+void loop() {
+    // Check if it's time to transmit (approximately every minute)
+    if (g_watchdog_counter >= (7 * TRANSMISSION_DELAY)) {
+        g_watchdog_counter = 0;
+        
+        // Wake up peripherals and prepare for transmission
+        wakeupFromSleep();
+        
+        // Indicate activity with debug LED
+        SET_BIT(DDRD, PD7);                            // LED as output
+        SET_BIT(PORTD, PD7);                           // Turn on LED
+        
+        // Prepare and transmit data
+        prepareDataPacket();
+        bool transmission_result = g_radio.write(&g_data_packet, PAYLOAD_SIZE);
+        
+        #ifdef DEBUG
+            Serial.print(F("TX result: "));
+            Serial.println(transmission_result ? F("OK") : F("FAIL"));
+            delay(100);
+        #endif
+        
+        // Turn off debug LED
+        CLEAR_BIT(PORTD, PD7);                         // Turn off LED
+        CLEAR_BIT(DDRD, PD7);                          // LED as input
+    }
+    
+    // Return to deep sleep mode
+    enterSleepMode();
 }
